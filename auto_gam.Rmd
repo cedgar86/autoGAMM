@@ -1,0 +1,155 @@
+Loading Required libraries:
+```{r}
+library(mgcv)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(stringr)
+library(geiger)
+library(reshape2)
+library(rlist)
+```
+
+Set workng directory to folder script is in:
+
+```{r}
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+dir_path = getwd()
+dir_path
+```
+
+Make list of file names (fnames) in directory
+
+#```{r}
+fnames <- list.files(pattern = "*.csv")
+print(fnames)
+analyses_summary_combined <- data.frame()
+#```
+
+
+
+
+```{r}
+
+fnames <- list.files(pattern = "*.csv")
+print(fnames)
+analyses_summary_combined <- data.frame()
+
+for(fname in fnames){
+  gam_data <- read.csv(fname)
+  vname <- str_remove(fname, "_compiled_long.csv")
+  
+  subset_id <- gam_data[1, 3]
+  data_subset <- subset(gam_data, vid_name == subset_id)
+  timepoints <- data_subset["time"]
+
+  gam <- gam(rating ~ s(time), data = gam_data)
+  #gamm <- gamm(rating ~ s(time), data = gam_data, random = list(vid_name=~1), correlation = corAR1())
+  
+  #gam_plot <- plot(gam, main = c(fname,  'GAM'), xlab = 'Time (s)', ylab = 'Fit')
+  #gamm_plot <- plot(gamm$gam, main = c(fname, 'GAMM'), xlab = 'Time (s)', ylab = 'Fit')
+  
+  gam_pred <- predict.gam(gam, timepoints, se.fit = TRUE)
+  gam_pred <- as.data.frame(gam_pred)
+  gam_pred$time <- timepoints$time
+  gam_pred$se.hi = (gam_pred$fit + gam_pred$se.fit)
+  gam_pred$se.low = (gam_pred$fit - gam_pred$se.fit)
+  gam_pred <- as.data.frame(gam_pred)
+  
+  gam_data <- select(gam_data, "time", "vid_name", "rating")
+  data_wide <- spread(gam_data, "vid_name", "rating")
+  
+  gam_pred2 <- select(gam_pred, fit, se.fit, se.hi, se.low)
+  final_data_output <- cbind(data_wide, gam_pred2)
+  rownames(final_data_output) <- 1:nrow(final_data_output)
+  
+  just_ratings <- select(final_data_output, -c(time, fit, se.fit, se.hi, se.low))
+  rating_cols <- colnames(just_ratings)
+  
+  output_fname1 <- paste(vname, "data_gamfit.csv", sep = '_')
+  output_fname2 <- paste(vname, "gam_analysis.csv", sep = '_')
+  
+  fit_cor <- as.data.frame(cor(final_data_output$fit, final_data_output[rating_cols]))
+  fit_cor <- melt(fit_cor)
+  fit_diff <- final_data_output$fit-final_data_output[rating_cols]
+  fit_diff <- as.data.frame(abs(colMeans(fit_diff)))
+  rating_means <- colMeans(final_data_output[rating_cols])
+  fit_summary <-cbind(fit_cor, fit_diff, rating_means)
+  
+  colnames(fit_summary) <- c("vname_part", "fit_corr", "fit_diff", "rating_mean")
+  rownames(fit_summary) = NULL
+  
+  partIDs <- fit_summary$vname_part
+  
+  id_part = list()
+  for (id in partIDs) {
+   split1 <- strsplit(id, "_ses")[[1]][1]
+   split2 <- c("P", strsplit(split1, "_P")[[1]][2])
+   partID <- paste(split2[2])
+   
+   id_part <- c(id_part, partID)
+  }
+  
+  fit_summary$partID <- as.character(id_part)
+  analyses_summary_combined <- rbind(analyses_summary_combined, fit_summary)
+  analyses_summary_combined <- as.data.frame(analyses_summary_combined)
+  as.character(analyses_summary_combined$partID)
+
+  #write.csv(final_data_output, output_fname1, row.names=FALSE)
+  #write.csv(fit_summary, output_fname2, row.names=FALSE)
+  #write.csv(analyses_summary_combined, "analyses summary combined.csv", row.names = FALSE)
+
+gam_ggPlot <- ggplot(gam_pred, aes(time, fit))+ 
+    geom_ribbon(aes(ymin = se.low, ymax = se.hi, fill="rosybrown2"), alpha = 0.5) + 
+    geom_line(color="black", size=.5) + 
+    theme(legend.position = "none", panel.background = element_rect(colour = "black", fill = "white")) + 
+    labs(x = "Time", y = "Rating (fit)") + ggtitle(fname)
+      §
+
+
+}
+```
+
+
+```{r}
+
+#Create a list of participant IDs using the 'partID' column in the analysis summary column - this will be used to select subsets of the data for each participant:
+
+partID_list <- analyses_summary_combined$partID[!duplicated(analyses_summary_combined$partID)]
+partID_list <- as.character(partID_list)
+parts_data <- data.frame(matrix(ncol = 4, nrow = 0))
+subset_colnames <- c("partID", "fit_diff", "fit_corr", "rating_mean")
+colnames(parts_data) <- subset_colnames
+
+for (id in partID_list) {
+  analyses_subset <- as.data.frame(subset(analyses_summary_combined, partID == id,))
+  #print(analyses_subset)
+  
+  t_partID = id
+  m_fit_diff = as.numeric(analyses_subset$fit_diff)
+  m_fit_diff = mean(m_fit_diff, na.rm = TRUE)
+  m_fit_corr = as.numeric(analyses_subset$fit_corr)
+  m_fit_corr = mean(m_fit_corr, na.rm = TRUE)
+  m_rating_mean = as.numeric(analyses_subset$rating_mean)
+  m_rating_mean = mean(m_rating_mean, na.rm = TRUE)
+  
+  new_data <- data.frame("partID" = t_partID, "fit_diff" = m_fit_diff, "fit_cor" = m_fit_corr, "rating_mean" = m_rating_mean)
+  parts_data <- rbind(parts_data, new_data, deparse.level = 1)
+ 
+}
+
+print(parts_data)
+write.csv(parts_data, "participant's data output.csv" ,row.names = FALSE)
+```
+
+```{r}
+gam_ggPlot <- ggplot(gam_pred, aes(time, fit))+ 
+    geom_ribbon(aes(ymin = se.low, ymax = se.hi, fill="rosybrown2"), alpha = 0.5) + 
+    geom_line(color="black", size=.5) + 
+    theme(legend.position = "none", panel.background = element_rect(colour = "black", fill = "white")) + 
+    labs(x = "Time", y = "Rating (fit)") + ggtitle("SarahRB (Emotion)") #ggtitle(fname)
+  
+gam_ggPlot
+```
+
